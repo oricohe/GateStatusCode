@@ -1,0 +1,210 @@
+// GateAlarmTelegram.ino
+
+
+const int ledOpen = 2;  // the LED will turn on when the gate opens
+const int ledClose = 5; // the LED will turn on when the gate closes
+const int resetPin = 7; // reset pin to turn off the system in the end
+const int toOpen = 3;   // pin that switches the relay to the OPEN mode
+const int toClose = 4;  // pin that switches the relay to the CLOSE mode
+const int isOpen = 6;   // input pin that tells the system the mode (OPEN/CLOSE) of the gate
+int powerkey = 9;       // the power key of the sim7600x 4G
+ 
+#include <SoftwareSerial.h>
+SoftwareSerial portOne(10, 11); // RX, TX
+ 
+void setup() {
+  Serial.begin(115200);
+  portOne.begin(115200);
+ 
+  pinMode(ledOpen, OUTPUT);
+  pinMode(ledClose, OUTPUT);
+  pinMode(resetPin, OUTPUT);
+  pinMode(toOpen, OUTPUT);
+  pinMode(toClose, OUTPUT);
+  pinMode(isOpen, INPUT_PULLUP);
+  delay(100);
+ 
+  if (digitalRead(isOpen) == HIGH)
+    OpenFunction(true); // if the gate is open, the OpenFunction will start
+  else
+    CloseFunction(true); // if the gate is closed, the CloseFunction will start
+ 
+  digitalWrite(resetPin, HIGH); // shutdown the system, in this point the system doesn’t get power supply anymore
+  delay(1000); // for situations (not supposed to happen ever) when the system didn't shut down because the relay and the switch are still closing the circuit, the system will change the relay until the opening of the circuit
+  digitalWrite(toClose, HIGH);
+  delay(1000);
+  digitalWrite(toClose, LOW);
+  digitalWrite(toOpen, HIGH);
+  delay(1000);
+  digitalWrite(toOpen, LOW);
+}
+ 
+void loop() {
+  // The loop function is empty, so it doesn't contain any code.
+}
+ 
+// Function to handle the opening of the gate
+void OpenFunction(bool isFirstTime){
+  digitalWrite(ledOpen, HIGH); // turn on LED for gate open indication
+ 
+  if (isFirstTime) {
+    PowerOn(powerkey); // Power on the SIM7600x 4G module if it's the first time
+  }
+ 
+  SendingTelegramMessageClose(); // Send a Telegram message indicating that the gate is opened
+  digitalWrite(ledOpen, LOW); // turn off LED for gate open indication
+ 
+  if (digitalRead(isOpen) == HIGH) {
+    digitalWrite(toClose, HIGH); // switch the relay to CLOSE mode
+    delay(500);
+    digitalWrite(resetPin, HIGH); // shutdown the system
+    delay(1000);
+    digitalWrite(toClose, LOW); // switch the relay back to normal state
+  }
+  else {
+    CloseFunction(false); // if the gate is not fully opened, call the CloseFunction
+  }
+}
+ 
+// Function to handle the closing of the gate
+void CloseFunction(bool isFirstTime){
+  digitalWrite(ledClose, HIGH); // turn on LED for gate close indication
+ 
+  if (isFirstTime) {
+    PowerOn(powerkey); // Power on the SIM7600x 4G module if it's the first time
+  }
+ 
+  SendingTelegramMessageOpen(); // Send a Telegram message indicating that the gate is closed
+  digitalWrite(ledClose, LOW); // turn off LED for gate close indication
+ 
+  if (digitalRead(isOpen) == LOW) {
+    digitalWrite(toOpen, HIGH); // switch the relay to OPEN mode
+    delay(500);
+    digitalWrite(resetPin, HIGH); // shutdown the system
+    delay(1000);
+    digitalWrite(toOpen, LOW); // switch the relay back to normal state
+  }
+  else {
+    OpenFunction(false); // if the gate is not fully closed, call the OpenFunction
+  }
+}
+ 
+// Function to power on the SIM7600x 4G module
+bool PowerOn(int PowerKey){
+  Serial.print("Starting up...\n");
+  delay(2000);
+  pinMode(PowerKey, OUTPUT);
+  digitalWrite(PowerKey, HIGH);
+  delay(2000);
+  digitalWrite(PowerKey, LOW);
+  Serial.print("Power of SIM7600 is on.");
+ 
+  while (portOne.available() == 0) {
+    // Wait for data to become available
+    delay(500);
+  }
+ 
+  String teststr2 = portOne.readString();  // Read data until timeout
+ 
+  if (teststr2.substring(0, 7) == "\r\nERORR") {
+    PowerOn(PowerKey); // Retry power on if an error occurs
+  }
+ 
+  String answer = "";
+ 
+  // Send AT command until it receives "OK" as the answer
+  while (sendATcommand("AT","AT\r\nOK\r\n")) {
+    delay(1000);
+  }
+ 
+  // Send AT command to disable command echo until it receives "OK" as the answer
+  while (sendATcommand("ATE0","ATE0\r\nOK\r\n") || sendATcommand("AT","")) {
+    delay(1000);
+  }
+ 
+  // Send AT command until it receives "OK" as the answer
+  while (sendATcommand("AT","")) {
+    delay(1000);
+  }
+ 
+  // Wait for the answer to contain "+CREG: 0,1"
+  while (answer.substring(0, 4) == "\r\n+CREG: 0,1") {
+    portOne.println("AT+CREG?");
+ 
+    while (portOne.available() == 0) {
+      // Wait for data to become available
+      delay(500);
+    }
+ 
+    answer = portOne.readString();  // Read data until timeout
+    delay(1000);
+  }
+ 
+  return true;
+}
+ 
+// Function to send a Telegram message indicating that the gate is opened
+bool SendingTelegramMessageOpen(){
+  sendATcommand("AT+HTTPINIT","");
+  sendATcommand("AT+HTTPPARA=\"URL\",\"https://api.telegram.org/<your bot ID>/sendMessage?chat_id=<your chat name>&text=Gate+0001+is+just+now+closed\"","");
+  sendATcommand("AT+HTTPACTION=0","");
+  sendATcommand("AT+HTTPTERM","");
+}
+ 
+// Function to send a Telegram message indicating that the gate is closed
+bool SendingTelegramMessageClose(){
+  sendATcommand("AT+HTTPINIT","");
+  sendATcommand("AT+HTTPPARA=\"URL\",\"https://api.telegram.org/<your bot ID>/sendMessage?chat_id=<your chat name>&text=Gate+0001+is+just+now+opened\"","");
+  sendATcommand("AT+HTTPACTION=0","");
+  sendATcommand("AT+HTTPTERM","");
+}
+ 
+// Function to send an AT command and check for the expected answer
+bool sendATcommand(String ATcommand, String expected_answer){
+  if (ATcommand.length() > 20){
+    print_all(ATcommand);
+  }
+  else {
+    portOne.println(ATcommand);
+  }
+  Serial.print("Serial: ");
+  Serial.println(ATcommand);
+ 
+  while (portOne.available() == 0) {
+    // Wait for data to become available
+    delay(500);
+  }
+ 
+  String answer = portOne.readString();  // Read data until timeout
+  Serial.print("portOne: ");
+  Serial.println(answer);
+ 
+  if (expected_answer == "") {
+    if (ATcommand.indexOf("OK") != -1){
+      return true;
+    }
+  }
+ 
+  if (answer == expected_answer){
+    return true;
+  }
+ 
+  return false;
+}
+ 
+// Function to print a long string in parts
+void print_all(String str){
+  int stringIndex = 0;
+ 
+  while(stringIndex < str.length()){
+    // Print the next 20 characters of the string to the serial port
+    portOne.print(str.substring(stringIndex, stringIndex + 20));
+ 
+    // Move the string index forward by 20 characters
+    stringIndex += 20;
+    Serial.println(stringIndex);
+    delay(100);
+  }
+ 
+  portOne.println("");
+}
